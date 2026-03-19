@@ -2,6 +2,21 @@
 
 This chapter example shows how UMA service anatomy can stay portable and deterministic. The validated reader path is Rust-first: a pure Rust core plus a WASI CLI. A parallel TypeScript implementation is kept in parity so readers can compare the same contract and rule semantics across languages.
 
+## Functional Requirements
+- Phased release of new features
+- Rolling back features or changes
+- conducting A/B experiementation
+
+
+
+Quality tier: 
+- Deterministic hashing is identical across runtimes. 
+- p50 latency under 1 ms for a single evaluation on commodity hardware. 
+
+Resource budget: 
+- No more than 4 MB memory. 
+- No more than 2 ms CPU per evaluation. 
+
 ## Learning path position
 
 - You are here: the first hands-on UMA chapter
@@ -142,6 +157,11 @@ The evaluator accepts an **input JSON** document with a flag definition and a co
 }
 ```
 
+- flag -> Key: unique identifier for the feature flag. 
+- variants: possible values the flag can return. 
+- weights: optional distribution for randomized rollout. 
+- rules: optional conditions for targeting (e.g., “if country == CA, serve variant B”).
+
 ### Output
 
 ```json
@@ -151,6 +171,13 @@ The evaluator accepts an **input JSON** document with a flag definition and a co
   "matchedRule": 0
 }
 ```
+
+Outpus: 
+- key: the same identifier passed in.
+- variant: the chosen outcome. 
+- reason: why the variant was selected (rule match, weighted hash, or default). 
+- meta: optional telemetry like evaluation duration or rule id.
+- context: attributes of the current user, device, or environment.
 
 ### Rule language
 
