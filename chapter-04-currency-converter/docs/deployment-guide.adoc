@@ -1,0 +1,1737 @@
+= WebAssembly Runtime Guide for Universal Microservices
+:toc:
+:toc-placement: preamble
+:toclevels: 3
+:icons: font
+:source-highlighter: highlightjs
+
+This document covers WebAssembly (WASM) compilation targets, WASI runtime versions, and how to run Universal Microservices in browser environments.
+
+== WebAssembly Compilation Targets
+
+=== wasm32-wasip1 (Recommended)
+
+The `wasm32-wasip1` target compiles Rust code to WebAssembly with **WASI Preview 1** support.
+
+[cols="1,3"]
+|===
+|Target |`wasm32-wasip1`
+|WASI Version |Preview 1 (snapshot_preview1)
+|Status |Stable, production-ready
+|Rust Support |Stable toolchain
+|Runtime Support |Universal (wasmtime, wasmer, browser polyfills, edge workers)
+|Rust Command |`rustup target add wasm32-wasip1`
+|===
+
+==== Capabilities
+
+* File I/O (stdin, stdout, stderr)
+* Environment variables
+* Command-line arguments
+* System time and random number generation
+* Basic networking (limited)
+
+==== Example Build
+
+[source,bash]
+----
+# Add the target
+rustup target add wasm32-wasip1
+
+# Compile your binary
+cargo build --bin fx --target wasm32-wasip1 --release
+
+# Output location
+# target/wasm32-wasip1/release/fx.wasm
+----
+
+=== wasm32-wasi (Deprecated Alias)
+
+`wasm32-wasi` is the **original name** for the same target now called `wasm32-wasip1`. Both names work identically:
+
+[source,bash]
+----
+# These produce identical output:
+cargo build --target wasm32-wasi
+cargo build --target wasm32-wasip1
+----
+
+IMPORTANT: Use `wasm32-wasip1` going forward for explicit version clarity.
+
+=== wasm32-wasip2 (Experimental)
+
+The `wasm32-wasip2` target compiles to **WASI Preview 2** (Component Model).
+
+[cols="1,3"]
+|===
+|Target |`wasm32-wasip2`
+|WASI Version |Preview 2 (Component Model)
+|Status |Experimental (2023+)
+|Rust Support |Nightly builds required
+|Runtime Support |Limited (wasmtime 14+ partial support)
+|Rust Command |Not available in stable yet
+|===
+
+==== Component Model Benefits
+
+* **Better composability** - Align with UMA orchestration patterns
+* **Interface types** - Cleaner contract boundaries
+* **Virtualization** - Enhanced trust boundary isolation
+* **Higher-level APIs** - `wasi:http`, `wasi:cli`, `wasi:filesystem`
+
+TIP: Preview 2's Component Model is architecturally aligned with UMA's long-term vision, but Preview 1 is production-ready today.
+
+== WASI Versions Comparison
+
+=== WASI Preview 1 (Current Standard)
+
+[cols="1,3"]
+|===
+|Released |2019-2023
+|Architecture |Module-based (traditional WASM imports/exports)
+|APIs |Low-level syscalls: `fd_read`, `fd_write`, `clock_time_get`, `random_get`
+|Adoption |Widely deployed in production systems
+|Runtimes |wasmtime, wasmer, browser polyfills, Cloudflare Workers, Fastly Compute
+|===
+
+==== System Calls (Partial List)
+
+[source,rust]
+----
+// stdin/stdout I/O
+fd_read(fd: i32, iovs: *const iovec, iovs_len: usize, nread: *mut usize) -> errno
+fd_write(fd: i32, iovs: *const ciovec, iovs_len: usize, nwritten: *mut usize) -> errno
+
+// Time and randomness
+clock_time_get(id: clockid, precision: timestamp, time: *mut timestamp) -> errno
+random_get(buf: *mut u8, buf_len: usize) -> errno
+
+// Process control
+proc_exit(rval: exitcode) -> !
+----
+
+=== WASI Preview 2 (Emerging Standard)
+
+[cols="1,3"]
+|===
+|Released |2023+ (in development)
+|Architecture |Component-based with interface types
+|APIs |High-level interfaces: `wasi:http/outgoing-handler`, `wasi:cli/terminal-output`
+|Adoption |Experimental, early adopters only
+|Runtimes |wasmtime 14+ (partial), experimental implementations
+|===
+
+==== Interface Example
+
+[source,wit]
+----
+// WIT (WebAssembly Interface Types) definition
+package wasi:http@0.2.0;
+
+interface outgoing-handler {
+  handle: func(
+    request: outgoing-request,
+    options: request-options
+  ) -> result<incoming-response, error-code>;
+}
+----
+
+== Which WASI Version for UMA?
+
+=== Current Recommendation: WASI Preview 1
+
+For Universal Microservices in 2026, **use wasm32-wasip1**:
+
+✅ **Universal runtime support** - Runs identically across:
+
+* Native execution (development/testing)
+* Cloud runtimes (wasmtime, wasmer)
+* Edge computing platforms (Cloudflare Workers, Fastly Compute)
+* Browsers (with JavaScript WASI polyfill)
+
+✅ **Stable tooling** - Mature Rust compiler, no nightly builds required
+
+✅ **Proven portability** - This repository demonstrates behavioral parity between native and WASM execution (see `chapter-06-portability-lab`)
+
+✅ **Production-ready** - Used in real-world edge computing today
+
+=== Future Migration: WASI Preview 2
+
+Preview 2's **Component Model** better aligns with UMA's architectural principles:
+
+* **Composability** - Natural fit for UMA orchestration
+* **Interface contracts** - Explicit boundaries match UMA's contract-driven design
+* **Virtualization** - Enhanced isolation for trust boundaries
+* **Evolution** - Better support for versioned interfaces
+
+However, Preview 2 is still experimental. The UMA *pattern* remains valid—you'd simply swap compilation targets when Preview 2 matures.
+
+== Running in the Browser
+
+=== Architecture Overview
+
+----
+┌─────────────────────────────────────────────────────┐
+│                    Browser                          │
+│                                                     │
+│  ┌──────────────┐         ┌──────────────────┐    │
+│  │  index.html  │────────>│   fx.js (WASI   │    │
+│  │   (UI)       │         │   Polyfill)      │    │
+│  └──────────────┘         └─────────┬────────┘    │
+│                                      │             │
+│                                      ▼             │
+│                            ┌──────────────────┐    │
+│                            │   fx.wasm        │    │
+│                            │   (Rust binary)  │    │
+│                            └──────────────────┘    │
+│                                                     │
+└─────────────────────────────────────────────────────┘
+----
+
+=== WASI Polyfill Implementation
+
+The browser adapter (`fx.js`) provides a JavaScript implementation of the WASI Preview 1 syscalls:
+
+[source,javascript]
+----
+const wasiImports = {
+  wasi_snapshot_preview1: {
+    // I/O operations
+    fd_read: (fd, iovsPtr, iovsLen, nreadPtr) => { /* ... */ },
+    fd_write: (fd, iovsPtr, iovsLen, nwrittenPtr) => { /* ... */ },
+    
+    // Time and randomness
+    clock_time_get: (id, precision, timePtr) => { /* ... */ },
+    random_get: (bufPtr, bufLen) => { /* ... */ },
+    
+    // Process control
+    proc_exit: (code) => { throw new WasmExit(code); },
+    
+    // Environment
+    environ_sizes_get: (envCountPtr, envBufSizePtr) => { /* ... */ },
+    args_sizes_get: (argcPtr, argvBufSizePtr) => { /* ... */ }
+  }
+};
+----
+
+=== Building for the Browser
+
+==== Step 1: Compile to WASM
+
+[source,bash]
+----
+# Build the release binary targeting wasm32-wasip1
+cargo build --bin fx --target wasm32-wasip1 --release
+
+# The output is a .wasm file
+ls -lh target/wasm32-wasip1/release/fx.wasm
+# Typically ~200KB unoptimized
+----
+
+==== Step 2: Copy to Browser Directory
+
+[source,bash]
+----
+cp target/wasm32-wasip1/release/fx.wasm browser-fx/
+----
+
+==== Step 3: Serve with Local Web Server
+
+Browsers block `fetch()` on `file://` URLs, so you need a local server:
+
+[source,bash]
+----
+cd browser-fx
+
+# Option 1: Python 3
+python3 -m http.server 8000
+
+# Option 2: Node.js
+npx http-server -p 8000
+
+# Option 3: PHP
+php -S localhost:8000
+
+# Option 4: Rust (simple-http-server)
+cargo install simple-http-server
+simple-http-server -p 8000
+----
+
+==== Step 4: Open in Browser
+
+Navigate to `http://localhost:8000` and interact with the UI.
+
+=== Data Flow
+
+. **User Input** → HTML form collects currency conversion parameters
+. **JavaScript Adapter** → Serializes input to JSON, encodes as UTF-8 bytes
+. **WASI Polyfill** → Provides stdin bytes to WASM module
+. **WASM Execution** → Rust binary reads stdin, processes request, writes stdout
+. **JavaScript Capture** → Collects stdout bytes from polyfill
+. **Result Display** → Decodes UTF-8, parses JSON, updates UI
+
+[source,javascript]
+----
+// Simplified flow
+const input = { from: "USD", to: "EUR", amount: 100 };
+const inputBytes = new TextEncoder().encode(JSON.stringify(input));
+
+const stdoutBytes = [];
+const instance = await WebAssembly.instantiate(wasmBytes, {
+  wasi_snapshot_preview1: createPolyfill(inputBytes, stdoutBytes)
+});
+
+instance.exports._start(); // Execute Rust main()
+
+const output = JSON.parse(new TextDecoder().decode(stdoutBytes));
+// { from: "USD", to: "EUR", amount: 100, rate: 0.92, result: 92.0 }
+----
+
+=== Error Handling
+
+The WASI polyfill captures process exit codes:
+
+[cols="1,3"]
+|===
+|Exit Code |Meaning
+
+|`0` |Success
+|`1` |Invalid input JSON (parse error)
+|`2` |Unsupported currency pair
+|`3` |Output write error
+|`4` |Input read error
+|===
+
+[source,javascript]
+----
+try {
+  instance.exports._start();
+} catch (err) {
+  if (err instanceof WasmExit) {
+    if (err.code === 1) throw new Error('Invalid input JSON');
+    if (err.code === 2) throw new Error('Unsupported currency pair');
+    // ... handle other codes
+  }
+}
+----
+
+== Browser Compatibility
+
+=== Required Features
+
+* WebAssembly (all modern browsers since 2017)
+* ES6 Modules (`import`/`export`)
+* `TextEncoder` / `TextDecoder` (UTF-8 handling)
+* `fetch()` API (loading .wasm file)
+* `crypto.getRandomValues()` (optional, fallback to `Math.random()`)
+
+=== Tested Browsers
+
+* ✅ Chrome/Edge 90+
+* ✅ Firefox 88+
+* ✅ Safari 14+
+* ✅ Opera 76+
+
+== Optimizing WASM Binary Size
+
+Default release builds are ~200KB. Apply these optimizations for production:
+
+=== Cargo.toml Configuration
+
+[source,toml]
+----
+[profile.release]
+opt-level = 'z'     # Optimize for size
+lto = true          # Link-time optimization
+codegen-units = 1   # Better optimization, slower compile
+strip = true        # Remove debug symbols
+panic = 'abort'     # Smaller panic handler
+----
+
+=== Post-Build Optimization
+
+[source,bash]
+----
+# Install wasm-opt from Binaryen toolkit
+cargo install wasm-opt
+
+# Optimize the binary
+wasm-opt -Oz -o fx-optimized.wasm fx.wasm
+
+# Result: typically 40-60% smaller
+----
+
+=== HTTP Compression
+
+Enable gzip or Brotli compression on your web server:
+
+[cols="1,1,1"]
+|===
+|Format |Compression |Typical Size
+
+|Uncompressed |1.0x |~200KB
+|gzip |~4x |~50KB
+|Brotli |~5x |~40KB
+|===
+
+== Running Across Environments
+
+The same `fx.wasm` binary runs in multiple environments:
+
+=== 1. Native (Development)
+
+[source,bash]
+----
+echo '{"from":"USD","to":"EUR","amount":100}' | \
+  cargo run --bin fx
+----
+
+=== 2. WASI Runtime (Production Server)
+
+[source,bash]
+----
+echo '{"from":"USD","to":"EUR","amount":100}' | \
+  wasmtime run fx.wasm
+----
+
+=== 3. Browser (Client-Side)
+
+[source,javascript]
+----
+const result = await convertCurrency({
+  from: "USD", to: "EUR", amount: 100
+});
+----
+
+=== 4. Edge Computing Platforms
+
+See the dedicated <<Running on Edge Computing Platforms>> section below for detailed deployment instructions.
+
+**Example (Cloudflare Workers):**
+
+[source,bash]
+----
+curl -X POST https://fx.your-worker.workers.dev \
+  -H "Content-Type: application/json" \
+  -d '{"from":"USD","to":"EUR","amount":100}'
+----
+
+=== 5. Cloud Platforms
+
+See the dedicated <<Running on Cloud Platforms>> section below for detailed deployment instructions.
+
+**Example (AWS Lambda via API Gateway):**
+
+[source,bash]
+----
+curl -X POST https://api-id.execute-api.us-east-1.amazonaws.com/prod/convert \
+  -H "Content-Type: application/json" \
+  -d '{"from":"USD","to":"EUR","amount":100}'
+----
+
+**Example (Google Cloud Functions):**
+
+[source,bash]
+----
+curl -X POST https://us-central1-project.cloudfunctions.net/currency-converter \
+  -H "Content-Type: application/json" \
+  -d '{"from":"USD","to":"EUR","amount":100}'
+----
+
+**Example (Cloud Run):**
+
+[source,bash]
+----
+echo '{"from":"USD","to":"EUR","amount":100}' | \
+  docker run -i --rm gcr.io/project/currency-converter
+----
+
+== Running on Edge Computing Platforms
+
+Edge computing platforms allow you to run your WASM currency converter at the network edge, close to users for minimal latency. The same `fx.wasm` binary runs unchanged across different edge providers.
+
+=== Benefits of Edge Deployment
+
+* **Low latency** - Execute near users (< 50ms worldwide)
+* **High availability** - Distributed across hundreds of data centers
+* **Automatic scaling** - Handle traffic spikes without configuration
+* **Cold start performance** - WASM initialization is typically < 1ms
+* **Cost efficiency** - Pay only for execution time, no idle servers
+
+=== Cloudflare Workers
+
+Cloudflare Workers supports WASI Preview 1 through their runtime.
+
+==== Project Structure
+
+----
+cloudflare-fx/
+├── wrangler.toml          # Cloudflare configuration
+├── src/
+│   └── index.js           # Worker entry point
+└── fx.wasm                # Your compiled binary
+----
+
+==== wrangler.toml
+
+[source,toml]
+----
+name = "fx-currency-converter"
+main = "src/index.js"
+compatibility_date = "2024-01-01"
+
+[vars]
+ENVIRONMENT = "production"
+
+# Upload the WASM module as a module binding
+[[modules]]
+type = "CompiledWasm"
+name = "FX_WASM"
+path = "fx.wasm"
+----
+
+==== src/index.js
+
+[source,javascript]
+----
+// Currency converter Worker for Cloudflare
+export default {
+  async fetch(request, env) {
+    // Only accept POST requests
+    if (request.method !== 'POST') {
+      return new Response('Method not allowed', { status: 405 });
+    }
+
+    try {
+      // Parse the incoming JSON request
+      const input = await request.json();
+      
+      // Validate input structure
+      if (!input.from || !input.to || typeof input.amount !== 'number') {
+        return new Response(JSON.stringify({
+          error: 'Invalid input: requires {from, to, amount}'
+        }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      // Create WASI imports for the module
+      const stdinBytes = Array.from(
+        new TextEncoder().encode(JSON.stringify(input))
+      );
+      const stdoutBytes = [];
+      let memory;
+
+      const wasiImports = createWasiImports(
+        { get buffer() { return memory.buffer; } },
+        stdinBytes,
+        stdoutBytes
+      );
+
+      // Instantiate the WASM module (env.FX_WASM is bound via wrangler.toml)
+      const instance = await WebAssembly.instantiate(
+        env.FX_WASM,
+        wasiImports
+      );
+      
+      memory = instance.exports.memory;
+
+      // Execute the conversion
+      try {
+        instance.exports._start();
+      } catch (err) {
+        if (err.name === 'WasmExit') {
+          // Handle exit codes
+          if (err.code !== 0) {
+            const errorMap = {
+              1: 'Invalid input JSON',
+              2: 'Unsupported currency pair',
+              3: 'Output write error',
+              4: 'Input read error'
+            };
+            return new Response(JSON.stringify({
+              error: errorMap[err.code] || `Process exited with code ${err.code}`
+            }), {
+              status: 400,
+              headers: { 'Content-Type': 'application/json' }
+            });
+          }
+        } else {
+          throw err;
+        }
+      }
+
+      // Parse and return the result
+      const outputStr = new TextDecoder().decode(new Uint8Array(stdoutBytes));
+      const result = JSON.parse(outputStr);
+
+      return new Response(JSON.stringify(result), {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'public, max-age=3600' // Cache for 1 hour
+        }
+      });
+
+    } catch (error) {
+      return new Response(JSON.stringify({
+        error: error.message
+      }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+  }
+};
+
+// WASI polyfill implementation (same as browser adapter)
+function createWasiImports(memory, stdinBytes, stdoutBytes) {
+  return {
+    wasi_snapshot_preview1: {
+      fd_write: (fd, iovsPtr, iovsLen, nwrittenPtr) => {
+        if (fd !== 1 && fd !== 2) return 52;
+        const memU32 = new Uint32Array(memory.buffer);
+        const memU8 = new Uint8Array(memory.buffer);
+        let bytesWritten = 0;
+        const start = iovsPtr >>> 2;
+        for (let i = 0; i < iovsLen; i++) {
+          const offset = memU32[start + i * 2];
+          const length = memU32[start + i * 2 + 1];
+          stdoutBytes.push(...memU8.slice(offset, offset + length));
+          bytesWritten += length;
+        }
+        memU32[nwrittenPtr >>> 2] = bytesWritten;
+        return 0;
+      },
+      fd_read: (fd, iovsPtr, iovsLen, nreadPtr) => {
+        if (fd !== 0) return 52;
+        const memU32 = new Uint32Array(memory.buffer);
+        const memU8 = new Uint8Array(memory.buffer);
+        let bytesRead = 0;
+        const start = iovsPtr >>> 2;
+        for (let i = 0; i < iovsLen; i++) {
+          const offset = memU32[start + i * 2];
+          const length = memU32[start + i * 2 + 1];
+          const chunk = stdinBytes.slice(0, length);
+          memU8.set(chunk, offset);
+          stdinBytes.splice(0, chunk.length);
+          bytesRead += chunk.length;
+          if (stdinBytes.length === 0) break;
+        }
+        memU32[nreadPtr >>> 2] = bytesRead;
+        return 0;
+      },
+      fd_close: () => 0,
+      fd_fdstat_get: () => 0,
+      fd_prestat_get: () => 8,
+      fd_prestat_dir_name: () => 8,
+      args_sizes_get: (argcPtr, argvBufSizePtr) => {
+        const memU32 = new Uint32Array(memory.buffer);
+        memU32[argcPtr >>> 2] = 0;
+        memU32[argvBufSizePtr >>> 2] = 0;
+        return 0;
+      },
+      args_get: () => 0,
+      environ_sizes_get: (envCountPtr, envBufSizePtr) => {
+        const memU32 = new Uint32Array(memory.buffer);
+        memU32[envCountPtr >>> 2] = 0;
+        memU32[envBufSizePtr >>> 2] = 0;
+        return 0;
+      },
+      environ_get: () => 0,
+      random_get: (bufPtr, bufLen) => {
+        const memU8 = new Uint8Array(memory.buffer);
+        crypto.getRandomValues(memU8.subarray(bufPtr, bufPtr + bufLen));
+        return 0;
+      },
+      clock_time_get: (_id, _precision, timePtr) => {
+        const nowNs = BigInt(Date.now()) * 1000000n;
+        const memView = new DataView(memory.buffer);
+        memView.setBigUint64(timePtr, nowNs, true);
+        return 0;
+      },
+      proc_exit: (code) => {
+        const err = new Error('Process exited');
+        err.name = 'WasmExit';
+        err.code = code;
+        throw err;
+      }
+    }
+  };
+}
+----
+
+==== Deployment
+
+[source,bash]
+----
+# Install Wrangler CLI
+npm install -g wrangler
+
+# Authenticate
+wrangler login
+
+# Build and deploy
+cargo build --bin fx --target wasm32-wasip1 --release
+cp target/wasm32-wasip1/release/fx.wasm cloudflare-fx/
+cd cloudflare-fx
+wrangler deploy
+
+# Test the deployed worker
+curl -X POST https://fx-currency-converter.YOUR_SUBDOMAIN.workers.dev \
+  -H "Content-Type: application/json" \
+  -d '{"from":"USD","to":"EUR","amount":100}'
+
+# Response: {"from":"USD","to":"EUR","amount":100,"rate":0.92,"result":92.0}
+----
+
+==== Performance Characteristics
+
+[cols="1,2"]
+|===
+|Metric |Value
+
+|Cold start |< 1ms (WASM instantiation)
+|Execution time |< 5ms (typical conversion)
+|Memory usage |~2MB (includes WASM + runtime)
+|Geographic distribution |300+ cities worldwide
+|Free tier |100,000 requests/day
+|===
+
+=== Fastly Compute@Edge
+
+Fastly Compute supports WASI through their Compute runtime.
+
+==== Project Structure
+
+----
+fastly-fx/
+├── fastly.toml           # Fastly configuration
+├── src/
+│   └── main.rs          # Rust entry point (using fastly SDK)
+└── fx.wasm              # Your compiled binary (embedded)
+----
+
+==== Using Fastly SDK
+
+[source,rust]
+----
+// Cargo.toml
+[dependencies]
+fastly = "0.10"
+serde_json = "1"
+
+// src/main.rs
+use fastly::http::{Method, StatusCode};
+use fastly::{Error, Request, Response};
+
+#[fastly::main]
+fn main(req: Request) -> Result<Response, Error> {
+    // Only accept POST requests
+    if req.get_method() != Method::POST {
+        return Ok(Response::from_status(StatusCode::METHOD_NOT_ALLOWED)
+            .with_body("Method not allowed"));
+    }
+
+    // Parse JSON body
+    let body = req.into_body_str();
+    let input: serde_json::Value = match serde_json::from_str(&body) {
+        Ok(v) => v,
+        Err(_) => {
+            return Ok(Response::from_status(StatusCode::BAD_REQUEST)
+                .with_body(r#"{"error":"Invalid JSON"}"#));
+        }
+    };
+
+    // Load and instantiate the embedded WASM module
+    // (In practice, you'd use wasmtime or compile-time embedding)
+    let output = execute_fx_wasm(&input)?;
+
+    Ok(Response::from_status(StatusCode::OK)
+        .with_content_type("application/json")
+        .with_body(output))
+}
+
+fn execute_fx_wasm(input: &serde_json::Value) -> Result<String, Error> {
+    // Instantiate fx.wasm with WASI runtime
+    // This is a simplified example; actual implementation would use
+    // wasmtime embedded in the Fastly runtime
+    
+    let input_json = input.to_string();
+    // Execute WASM and capture output
+    // ... (similar pattern to browser/Cloudflare)
+    
+    Ok(r#"{"from":"USD","to":"EUR","amount":100,"rate":0.92,"result":92.0}"#.to_string())
+}
+----
+
+==== Deployment
+
+[source,bash]
+----
+# Install Fastly CLI
+brew install fastly/tap/fastly  # macOS
+# or download from https://developer.fastly.com/learning/tools/cli
+
+# Initialize project
+fastly compute init
+
+# Build service
+cargo build --bin fx --target wasm32-wasip1 --release
+cp target/wasm32-wasip1/release/fx.wasm fastly-fx/
+
+# Deploy
+cd fastly-fx
+fastly compute publish
+
+# Test
+curl -X POST https://your-service.edgecompute.app/convert \
+  -H "Content-Type: application/json" \
+  -d '{"from":"USD","to":"EUR","amount":100}'
+----
+
+=== AWS Lambda@Edge
+
+Lambda@Edge with CloudFront can run WASM, though with some additional setup required.
+
+==== Limitations
+
+* No direct WASI support (must bundle a JavaScript WASI runtime)
+* 1MB compressed size limit (affects large WASM modules)
+* Longer cold starts (~50-100ms) compared to Cloudflare/Fastly
+
+==== Implementation Approach
+
+Use the same browser-style WASI polyfill approach:
+
+[source,javascript]
+----
+// Lambda@Edge handler
+exports.handler = async (event, context) => {
+    const request = event.Records[0].cf.request;
+    
+    if (request.method !== 'POST') {
+        return {
+            status: '405',
+            statusDescription: 'Method Not Allowed',
+            body: 'Only POST requests accepted'
+        };
+    }
+    
+    // Decode base64 body (API Gateway integration)
+    const body = Buffer.from(request.body.data, 'base64').toString('utf8');
+    const input = JSON.parse(body);
+    
+    // Load WASM module (bundled with deployment package)
+    const wasmModule = await WebAssembly.compile(fxWasmBytes);
+    const result = await executeWithWasi(wasmModule, input);
+    
+    return {
+        status: '200',
+        statusDescription: 'OK',
+        headers: {
+            'content-type': [{ key: 'Content-Type', value: 'application/json' }]
+        },
+        body: JSON.stringify(result)
+    };
+};
+----
+
+=== Vercel Edge Functions
+
+Vercel Edge Functions support WASM with WASI polyfills.
+
+==== api/convert.js
+
+[source,javascript]
+----
+import { convertCurrency } from '../lib/fx-wasm.js';
+
+export const config = {
+  runtime: 'edge',
+};
+
+export default async function handler(request) {
+  if (request.method !== 'POST') {
+    return new Response('Method not allowed', { status: 405 });
+  }
+
+  const input = await request.json();
+  
+  try {
+    const result = await convertCurrency(input);
+    return new Response(JSON.stringify(result), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  } catch (error) {
+    return new Response(JSON.stringify({ error: error.message }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+}
+----
+
+==== Deployment
+
+[source,bash]
+----
+# Vercel CLI
+npm install -g vercel
+
+# Deploy
+vercel deploy
+
+# The WASM file and polyfill are automatically bundled
+----
+
+=== Edge Platform Comparison
+
+[cols="1,2,2,2,2"]
+|===
+|Platform |Cold Start |WASI Support |Size Limit |Free Tier
+
+|**Cloudflare Workers** |< 1ms |Native |1MB script |100k req/day
+|**Fastly Compute** |< 5ms |Native |50MB |Free trial
+|**Vercel Edge** |< 10ms |Polyfill |1MB |100GB bandwidth
+|**AWS Lambda@Edge** |~50-100ms |Polyfill |1MB compressed |1M req/month
+|**Deno Deploy** |< 5ms |Native |10MB |100k req/day
+|===
+
+=== Edge Deployment Best Practices
+
+==== 1. Optimize Binary Size
+
+Edge platforms have strict size limits. Use aggressive optimization:
+
+[source,bash]
+----
+# Minimal binary size configuration
+cargo build --bin fx --target wasm32-wasip1 --release
+wasm-opt -Oz fx.wasm -o fx-optimized.wasm
+wasm-strip fx-optimized.wasm
+
+# Result: often < 100KB for simple services
+----
+
+==== 2. Cache Exchange Rates
+
+For production currency converters, cache external rate lookups:
+
+[source,javascript]
+----
+// Cloudflare Workers with KV storage
+const cachedRate = await env.RATES_KV.get(`${from}-${to}`);
+if (cachedRate && !isStale(cachedRate.timestamp)) {
+  return JSON.parse(cachedRate.value);
+}
+----
+
+==== 3. Implement Rate Limiting
+
+Protect your edge function from abuse:
+
+[source,javascript]
+----
+// Cloudflare Workers rate limiting
+const key = `rate-limit:${clientIp}`;
+const count = await env.RATE_LIMITER.get(key) || 0;
+if (count > 100) {
+  return new Response('Rate limit exceeded', { status: 429 });
+}
+await env.RATE_LIMITER.put(key, count + 1, { expirationTtl: 60 });
+----
+
+==== 4. Monitor Performance
+
+Track execution metrics:
+
+[source,javascript]
+----
+const start = Date.now();
+const result = await convertCurrency(input);
+const duration = Date.now() - start;
+
+// Log to analytics
+console.log(JSON.stringify({
+  duration_ms: duration,
+  from: input.from,
+  to: input.to,
+  timestamp: new Date().toISOString()
+}));
+----
+
+==== 5. Geographic Routing
+
+Route requests to nearest data centers with currency-specific data:
+
+[source,javascript]
+----
+// Use request headers to determine user location
+const country = request.headers.get('cf-ipcountry'); // Cloudflare
+const preferredCurrency = currencyForCountry(country);
+----
+
+=== UMA Principles in Edge Deployment
+
+The currency converter demonstrates UMA's **universal portability**:
+
+* **Same WASM binary** across all edge platforms
+* **Consistent behavior** - identical results regardless of provider
+* **Contract-driven** - JSON input/output remains constant
+* **No vendor lock-in** - Switch providers by changing deployment configuration only
+
+This is the essence of Universal Microservices: write once, deploy anywhere, behave consistently.
+
+== Running on Cloud Platforms
+
+Cloud platforms offer scalable serverless functions for running your WASM currency converter with traditional cloud infrastructure benefits: auto-scaling, managed infrastructure, and pay-per-use pricing.
+
+=== Cloud vs Edge Comparison
+
+[cols="1,2,2"]
+|===
+|Characteristic |Edge Computing |Traditional Cloud
+
+|**Latency** |< 50ms globally |50-300ms (region-dependent)
+|**Cold Start** |< 5ms |50-1000ms (runtime-dependent)
+|**Geographic Distribution** |Automatic (300+ locations) |Manual (select regions)
+|**Cost Model** |Per request + duration |Per request + memory + duration
+|**Use Case** |User-facing APIs |Backend processing, complex workflows
+|===
+
+=== AWS Lambda
+
+AWS Lambda supports WebAssembly through custom runtimes or Node.js/Python with WASM.
+
+==== Approach 1: Node.js Runtime with WASM
+
+[source,javascript]
+----
+// lambda/index.js
+const fs = require('fs');
+const { convertCurrency } = require('./fx-wasm');
+
+// Load WASM module once (outside handler for reuse)
+let wasmModule;
+const initWasm = async () => {
+  if (!wasmModule) {
+    const wasmBytes = fs.readFileSync('./fx.wasm');
+    wasmModule = await WebAssembly.compile(wasmBytes);
+  }
+  return wasmModule;
+};
+
+exports.handler = async (event) => {
+  try {
+    // Parse input from API Gateway
+    const input = typeof event.body === 'string' 
+      ? JSON.parse(event.body) 
+      : event.body;
+
+    // Validate input
+    if (!input.from || !input.to || typeof input.amount !== 'number') {
+      return {
+        statusCode: 400,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ error: 'Invalid input format' })
+      };
+    }
+
+    // Initialize WASM module
+    await initWasm();
+
+    // Execute conversion
+    const result = await convertCurrency(input, wasmModule);
+
+    return {
+      statusCode: 200,
+      headers: { 
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*'
+      },
+      body: JSON.stringify(result)
+    };
+
+  } catch (error) {
+    console.error('Error:', error);
+    return {
+      statusCode: 500,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ error: error.message })
+    };
+  }
+};
+----
+
+==== Approach 2: Custom Runtime with Wasmtime
+
+For better performance, use a custom runtime with wasmtime:
+
+[source,dockerfile]
+----
+# Dockerfile for AWS Lambda custom runtime
+FROM amazon/aws-lambda-provided:al2
+
+# Install Rust and build tools
+RUN yum install -y gcc openssl-devel && \
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+
+# Install wasmtime
+RUN curl -L https://github.com/bytecodealliance/wasmtime/releases/download/v17.0.0/wasmtime-v17.0.0-x86_64-linux.tar.xz \
+    -o wasmtime.tar.xz && \
+    tar -xf wasmtime.tar.xz && \
+    mv wasmtime-*/wasmtime /usr/local/bin/
+
+# Copy WASM binary
+COPY fx.wasm /var/task/
+COPY bootstrap /var/runtime/
+
+CMD [ "handler" ]
+----
+
+[source,bash]
+----
+#!/bin/bash
+# bootstrap - Lambda custom runtime handler
+
+set -euo pipefail
+
+# Handler loop
+while true; do
+    # Get next event
+    HEADERS="$(mktemp)"
+    EVENT_DATA=$(curl -sS -LD "$HEADERS" -X GET \
+        "http://${AWS_LAMBDA_RUNTIME_API}/2018-06-01/runtime/invocation/next")
+    
+    REQUEST_ID=$(grep -Fi Lambda-Runtime-Aws-Request-Id "$HEADERS" | tr -d '[:space:]' | cut -d: -f2)
+    
+    # Execute WASM with wasmtime
+    RESPONSE=$(echo "$EVENT_DATA" | wasmtime run /var/task/fx.wasm)
+    
+    # Send response
+    curl -X POST "http://${AWS_LAMBDA_RUNTIME_API}/2018-06-01/runtime/invocation/$REQUEST_ID/response" \
+        -d "$RESPONSE"
+done
+----
+
+==== Deployment with SAM
+
+[source,yaml]
+----
+# template.yaml - AWS SAM template
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+
+Resources:
+  CurrencyConverterFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: lambda/
+      Handler: index.handler
+      Runtime: nodejs20.x
+      MemorySize: 256
+      Timeout: 10
+      Environment:
+        Variables:
+          NODE_ENV: production
+      Events:
+        ConvertApi:
+          Type: Api
+          Properties:
+            Path: /convert
+            Method: post
+
+Outputs:
+  ApiUrl:
+    Description: "API Gateway endpoint URL"
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/convert"
+----
+
+[source,bash]
+----
+# Deploy with SAM CLI
+sam build
+sam deploy --guided
+
+# Test
+curl -X POST https://your-api-id.execute-api.us-east-1.amazonaws.com/Prod/convert \
+  -H "Content-Type: application/json" \
+  -d '{"from":"USD","to":"EUR","amount":100}'
+----
+
+=== Google Cloud Functions
+
+Google Cloud Functions (2nd gen) supports WebAssembly through Node.js runtime.
+
+==== functions/index.js
+
+[source,javascript]
+----
+const functions = require('@google-cloud/functions-framework');
+const fs = require('fs');
+
+// Load WASM module once
+let wasmInstance;
+
+async function initWasm() {
+  if (!wasmInstance) {
+    const wasmBytes = fs.readFileSync('./fx.wasm');
+    const module = await WebAssembly.compile(wasmBytes);
+    
+    // Create WASI imports
+    const stdinBytes = [];
+    const stdoutBytes = [];
+    let memory;
+    
+    const wasiImports = createWasiImports(
+      { get buffer() { return memory.buffer; } },
+      stdinBytes,
+      stdoutBytes
+    );
+    
+    wasmInstance = { module, wasiImports };
+  }
+  return wasmInstance;
+}
+
+functions.http('convertCurrency', async (req, res) => {
+  // Enable CORS
+  res.set('Access-Control-Allow-Origin', '*');
+  
+  if (req.method === 'OPTIONS') {
+    res.set('Access-Control-Allow-Methods', 'POST');
+    res.set('Access-Control-Allow-Headers', 'Content-Type');
+    res.status(204).send('');
+    return;
+  }
+
+  if (req.method !== 'POST') {
+    res.status(405).send({ error: 'Method not allowed' });
+    return;
+  }
+
+  try {
+    const input = req.body;
+    
+    // Validate input
+    if (!input.from || !input.to || typeof input.amount !== 'number') {
+      res.status(400).json({ error: 'Invalid input format' });
+      return;
+    }
+
+    // Initialize and execute WASM
+    const { module, wasiImports } = await initWasm();
+    
+    // Prepare stdin with input JSON
+    const inputJson = JSON.stringify(input);
+    const stdinBytes = Array.from(new TextEncoder().encode(inputJson));
+    const stdoutBytes = [];
+    let memory;
+    
+    const imports = createWasiImports(
+      { get buffer() { return memory.buffer; } },
+      stdinBytes,
+      stdoutBytes
+    );
+    
+    const instance = await WebAssembly.instantiate(module, imports);
+    memory = instance.exports.memory;
+    
+    // Execute
+    try {
+      instance.exports._start();
+    } catch (err) {
+      if (err.name !== 'WasmExit' || err.code !== 0) {
+        throw err;
+      }
+    }
+    
+    // Parse output
+    const outputJson = new TextDecoder().decode(new Uint8Array(stdoutBytes));
+    const result = JSON.parse(outputJson);
+    
+    res.status(200).json(result);
+
+  } catch (error) {
+    console.error('Error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// WASI polyfill implementation (same as browser/edge adapters)
+function createWasiImports(memory, stdinBytes, stdoutBytes) {
+  // ... (same implementation as browser adapter)
+}
+----
+
+==== Deployment
+
+[source,bash]
+----
+# Install gcloud CLI and authenticate
+gcloud auth login
+gcloud config set project YOUR_PROJECT_ID
+
+# Deploy function
+gcloud functions deploy currency-converter \
+  --gen2 \
+  --runtime=nodejs20 \
+  --region=us-central1 \
+  --source=./functions \
+  --entry-point=convertCurrency \
+  --trigger-http \
+  --allow-unauthenticated \
+  --memory=256MB \
+  --timeout=10s
+
+# Test
+curl -X POST https://us-central1-YOUR_PROJECT.cloudfunctions.net/currency-converter \
+  -H "Content-Type: application/json" \
+  -d '{"from":"USD","to":"EUR","amount":100}'
+----
+
+=== Azure Functions
+
+Azure Functions supports WASM through Node.js or custom handlers.
+
+==== function.json
+
+[source,json]
+----
+{
+  "bindings": [
+    {
+      "authLevel": "anonymous",
+      "type": "httpTrigger",
+      "direction": "in",
+      "name": "req",
+      "methods": ["post"],
+      "route": "convert"
+    },
+    {
+      "type": "http",
+      "direction": "out",
+      "name": "res"
+    }
+  ]
+}
+----
+
+==== convert/index.js
+
+[source,javascript]
+----
+const fs = require('fs');
+const path = require('path');
+
+// Cache WASM module
+let wasmModule;
+
+async function loadWasm() {
+  if (!wasmModule) {
+    const wasmPath = path.join(__dirname, 'fx.wasm');
+    const wasmBytes = fs.readFileSync(wasmPath);
+    wasmModule = await WebAssembly.compile(wasmBytes);
+  }
+  return wasmModule;
+}
+
+module.exports = async function (context, req) {
+  context.log('Currency conversion request received');
+
+  if (req.method !== 'POST') {
+    context.res = {
+      status: 405,
+      body: { error: 'Only POST method is allowed' }
+    };
+    return;
+  }
+
+  try {
+    const input = req.body;
+
+    // Validate input
+    if (!input || !input.from || !input.to || typeof input.amount !== 'number') {
+      context.res = {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+        body: { error: 'Invalid input: requires {from, to, amount}' }
+      };
+      return;
+    }
+
+    // Load and execute WASM
+    const module = await loadWasm();
+    
+    // Execute with WASI polyfill (same pattern as other adapters)
+    const result = await executeWasm(module, input);
+
+    context.res = {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+      body: result
+    };
+
+  } catch (error) {
+    context.log.error('Error:', error);
+    context.res = {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+      body: { error: error.message }
+    };
+  }
+};
+
+async function executeWasm(module, input) {
+  // Same WASI polyfill pattern as browser/edge adapters
+  const inputJson = JSON.stringify(input);
+  const stdinBytes = Array.from(new TextEncoder().encode(inputJson));
+  const stdoutBytes = [];
+  let memory;
+
+  const imports = createWasiImports(
+    { get buffer() { return memory.buffer; } },
+    stdinBytes,
+    stdoutBytes
+  );
+
+  const instance = await WebAssembly.instantiate(module, imports);
+  memory = instance.exports.memory;
+
+  try {
+    instance.exports._start();
+  } catch (err) {
+    if (err.name !== 'WasmExit' || err.code !== 0) {
+      throw err;
+    }
+  }
+
+  const outputJson = new TextDecoder().decode(new Uint8Array(stdoutBytes));
+  return JSON.parse(outputJson);
+}
+
+// WASI imports implementation...
+----
+
+==== Deployment
+
+[source,bash]
+----
+# Install Azure Functions Core Tools
+npm install -g azure-functions-core-tools@4
+
+# Initialize function app
+func init CurrencyConverterApp --javascript
+cd CurrencyConverterApp
+func new --name convert --template "HTTP trigger"
+
+# Copy files
+cp ../fx.wasm convert/
+cp ../index.js convert/
+
+# Test locally
+func start
+
+# Deploy to Azure
+az login
+az functionapp create --resource-group MyResourceGroup \
+  --consumption-plan-location eastus \
+  --runtime node \
+  --runtime-version 18 \
+  --functions-version 4 \
+  --name currency-converter-app \
+  --storage-account mystorageaccount
+
+func azure functionapp publish currency-converter-app
+
+# Test
+curl -X POST https://currency-converter-app.azurewebsites.net/api/convert \
+  -H "Content-Type: application/json" \
+  -d '{"from":"USD","to":"EUR","amount":100}'
+----
+
+=== Container-Based Cloud Deployment
+
+For maximum portability, deploy as a container using wasmtime.
+
+==== Dockerfile
+
+[source,dockerfile]
+----
+FROM rust:1.77-slim as builder
+
+# Install wasmtime
+RUN apt-get update && apt-get install -y curl xz-utils
+RUN curl -L https://github.com/bytecodealliance/wasmtime/releases/download/v17.0.0/wasmtime-v17.0.0-x86_64-linux.tar.xz \
+    -o wasmtime.tar.xz && \
+    tar -xf wasmtime.tar.xz && \
+    mv wasmtime-*/wasmtime /usr/local/bin/
+
+FROM debian:bookworm-slim
+COPY --from=builder /usr/local/bin/wasmtime /usr/local/bin/wasmtime
+COPY fx.wasm /app/fx.wasm
+
+# Simple HTTP wrapper using netcat
+COPY <<'EOF' /app/server.sh
+#!/bin/bash
+while true; do
+  echo -e "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r" | \
+  nc -l -p 8080 -q 1 | \
+  grep -Pzo '(?s)\r\n\r\n.*' | \
+  tail -n +2 | \
+  wasmtime run --dir=/tmp /app/fx.wasm
+done
+EOF
+
+RUN chmod +x /app/server.sh
+EXPOSE 8080
+CMD ["/app/server.sh"]
+----
+
+==== Deploy to Cloud Run (Google Cloud)
+
+[source,bash]
+----
+# Build and push container
+docker build -t gcr.io/YOUR_PROJECT/currency-converter .
+docker push gcr.io/YOUR_PROJECT/currency-converter
+
+# Deploy to Cloud Run
+gcloud run deploy currency-converter \
+  --image gcr.io/YOUR_PROJECT/currency-converter \
+  --platform managed \
+  --region us-central1 \
+  --allow-unauthenticated \
+  --memory 256Mi
+----
+
+==== Deploy to AWS ECS/Fargate
+
+[source,bash]
+----
+# Push to ECR
+aws ecr create-repository --repository-name currency-converter
+docker tag currency-converter:latest AWS_ACCOUNT.dkr.ecr.us-east-1.amazonaws.com/currency-converter:latest
+docker push AWS_ACCOUNT.dkr.ecr.us-east-1.amazonaws.com/currency-converter:latest
+
+# Deploy with ECS Fargate (using AWS Console or CloudFormation)
+----
+
+==== Deploy to Azure Container Instances
+
+[source,bash]
+----
+# Create container registry
+az acr create --resource-group MyResourceGroup \
+  --name mycontainerregistry --sku Basic
+
+# Push image
+az acr build --registry mycontainerregistry \
+  --image currency-converter:latest .
+
+# Deploy
+az container create --resource-group MyResourceGroup \
+  --name currency-converter \
+  --image mycontainerregistry.azurecr.io/currency-converter:latest \
+  --dns-name-label currency-converter \
+  --ports 8080
+----
+
+=== Cloud Platform Comparison
+
+[cols="1,2,2,2,2"]
+|===
+|Platform |Cold Start |Max Timeout |Memory Limit |Pricing Model
+
+|**AWS Lambda** |50-1000ms |15 min |10GB |$0.20/1M requests + $0.0000166667/GB-sec
+|**Google Cloud Functions** |100-800ms |60 min |32GB |$0.40/1M requests + $0.0000025/GB-sec
+|**Azure Functions** |100-1000ms |Unlimited (Premium) |14GB |$0.20/1M requests + compute
+|**AWS Fargate** |30-60s |Unlimited |120GB |$0.04048/vCPU-hour + $0.004445/GB-hour
+|**Google Cloud Run** |~1s |60 min |32GB |$0.40/1M requests + $0.00002400/vCPU-sec
+|**Azure Container Instances** |~30s |Unlimited |16GB |$0.0000125/vCPU-sec + $0.0000014/GB-sec
+|===
+
+=== Cloud Deployment Best Practices
+
+==== 1. Optimize Cold Starts
+
+Minimize initialization time for serverless functions:
+
+[source,javascript]
+----
+// Load WASM module once, outside handler
+let wasmModule;
+const initPromise = (async () => {
+  const wasmBytes = await fs.promises.readFile('./fx.wasm');
+  wasmModule = await WebAssembly.compile(wasmBytes);
+})();
+
+exports.handler = async (event) => {
+  await initPromise; // Ensure module is loaded
+  // ... use wasmModule
+};
+----
+
+==== 2. Implement Health Checks
+
+For container deployments:
+
+[source,javascript]
+----
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'healthy', timestamp: new Date().toISOString() });
+});
+----
+
+==== 3. Add Structured Logging
+
+[source,javascript]
+----
+console.log(JSON.stringify({
+  level: 'info',
+  message: 'Currency conversion completed',
+  from: input.from,
+  to: input.to,
+  amount: input.amount,
+  duration_ms: Date.now() - startTime,
+  timestamp: new Date().toISOString()
+}));
+----
+
+==== 4. Configure Auto-Scaling
+
+[source,yaml]
+----
+# AWS SAM template.yaml
+Resources:
+  CurrencyConverterFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      AutoPublishAlias: live
+      ProvisionedConcurrencyConfig:
+        ProvisionedConcurrentExecutions: 5  # Keep warm instances
+----
+
+==== 5. Set Resource Limits
+
+Right-size for your workload:
+
+[cols="1,2,2"]
+|===
+|Metric |Recommendation |Reason
+
+|Memory |256MB |WASM converter needs ~50MB, buffer for runtime
+|Timeout |10 seconds |Typical conversion: <100ms, buffer for cold starts
+|Concurrency |1000 (burst) |Handle traffic spikes without provisioning
+|===
+
+=== Cost Comparison Example
+
+For 10 million requests/month with 50ms average execution:
+
+[cols="1,2,2"]
+|===
+|Platform |Monthly Cost |Notes
+
+|**Cloudflare Workers** |~$5 |Best for edge use cases
+|**AWS Lambda** |~$30 |128MB memory, includes free tier
+|**Google Cloud Functions** |~$50 |256MB memory
+|**Azure Functions** |~$35 |256MB memory, consumption plan
+|**Cloud Run** |~$25 |Scales to zero, pay per use
+|===
+
+TIP: Edge platforms (Cloudflare/Fastly) are often more cost-effective for user-facing APIs due to lower latency and better pricing for high request volumes.
+
+=== Choosing Between Cloud and Edge
+
+[cols="1,2,2"]
+|===
+|Use Case |Recommendation |Reason
+
+|**User-facing API** |Edge (Cloudflare/Fastly) |< 50ms latency globally, better UX
+|**Internal microservice** |Cloud (Lambda/Cloud Functions) |Better integration with cloud services
+|**High data volume** |Cloud containers (Fargate/Cloud Run) |No request/memory limits
+|**Cost-sensitive** |Edge (Cloudflare) |Lower cost per request at scale
+|**Complex workflows** |Cloud (Step Functions/Cloud Workflows) |Better orchestration tools
+|===
+
+== UMA Portability Validation
+
+This repository demonstrates **behavioral parity** across execution environments.
+
+See `chapter-06-portability-lab/` for validation scripts:
+
+[source,bash]
+----
+# Run portability smoke tests
+./chapter-06-portability-lab/scripts/smoke_portability_labs.sh
+
+# Compare native vs WASM output
+./chapter-06-portability-lab/scripts/lab_parity.sh
+
+# Expected output:
+# ✓ Parity check passed: shared events are identical.
+----
+
+The same service contract produces identical results regardless of runtime environment—the core principle of Universal Microservices.
+
+== References
+
+* https://wasi.dev/[WASI Specification]
+* https://github.com/WebAssembly/WASI/blob/main/Proposals.md[WASI Proposals]
+* https://component-model.bytecodealliance.org/[Component Model Specification]
+* https://wasmtime.dev/[Wasmtime Runtime]
+* https://github.com/bytecodealliance/cargo-wasi[cargo-wasi Tool]
+
+== Summary
+
+[cols="2,3"]
+|===
+|Question |Answer
+
+|Which WASM target? |`wasm32-wasip1` (stable, production-ready)
+|Which WASI version? |Preview 1 for now, Preview 2 when mature
+|Can it run in browsers? |Yes, with a JavaScript WASI polyfill
+|Can it run on edge? |Yes, Cloudflare Workers, Fastly Compute, Vercel Edge, AWS Lambda@Edge
+|Can it run in cloud? |Yes, AWS Lambda, Google Cloud Functions, Azure Functions, Cloud Run, ECS/Fargate
+|Same code everywhere? |Yes—UMA's core portability principle
+|Cold start performance? |< 1ms edge, 50-1000ms cloud serverless, ~30s containers
+|Best for production? |Edge (latency-critical), Cloud (backend workflows), Containers (high throughput)
+|Production-ready? |Yes, widely deployed across edge and cloud platforms
+|===
+
+=== Deployment Environments Summary
+
+[cols="1,2,2,1,1"]
+|===
+|Environment |Use Case |Latency |Cold Start |Complexity
+
+|**Native** |Development, testing, local tools |N/A |None |Low
+|**Wasmtime/Wasmer** |Backend services, CLI tools |Low |< 10ms |Low
+|**Browser** |Client-side apps, offline-first |None (local) |< 5ms |Medium
+|**Edge Computing** |User-facing APIs, global CDN |< 50ms worldwide |< 5ms |Medium
+|**Cloud Serverless** |Event-driven, backend APIs |50-300ms (regional) |50-1000ms |Medium
+|**Cloud Containers** |Long-running services, high throughput |Low (regional) |30-60s |Medium-High
+|===
+
+=== Deployment Decision Matrix
+
+[cols="2,3"]
+|===
+|If You Need... |Deploy To...
+
+|**Lowest possible latency** |Edge Computing (Cloudflare Workers, Fastly)
+|**Complex backend workflows** |Cloud Serverless (AWS Lambda, Cloud Functions)
+|**High sustained throughput** |Cloud Containers (Fargate, Cloud Run, ACI)
+|**Offline-first capability** |Browser (Progressive Web App)
+|**Cost optimization at scale** |Edge Computing (better pricing per million requests)
+|**Deep cloud integration** |Cloud Serverless (native integration with cloud services)
+|**Simplest deployment** |Wasmtime CLI (single binary, no infrastructure)
+|===
+
+The UMA pattern works with any WASI-compatible runtime. As the WebAssembly ecosystem evolves toward Preview 2 and the Component Model, UMA services will benefit from better composability and interface contracts—but the fundamental architecture remains sound.
+
+**Key Takeaway**: Compile your Rust microservice once to `wasm32-wasip1`, then deploy it anywhere—browser, edge, cloud containers, cloud serverless, or native. A single WASM binary runs across 6+ deployment environments with identical behavior. This is the power of Universal Microservices Architecture.
