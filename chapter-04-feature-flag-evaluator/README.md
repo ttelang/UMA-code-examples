@@ -137,6 +137,17 @@ The guided lab inputs live in [labs/README.md](labs/README.md).
 
 The evaluator accepts an **input JSON** document with a flag definition and a context. It produces an **output JSON** document describing whether the flag is enabled and which rule matched.
 
+### High-level pseudocode
+
+```rust
+// Pseudocode: one entry point, runtime-agnostic 
+fn evaluate(flag: FlagDefinition, ctx: Context) -> EvaluationResult { 
+    // 1. Check targeting rules (first-match-wins)
+    // 2. If no match, return default value
+    // 3. Return enabled + matched rule index
+}
+```
+
 ### Input
 
 ```json
